@@ -1,0 +1,20 @@
+[server]
+base_url = "http://127.0.0.1:4096"
+connect_timeout_seconds = 5
+request_timeout_seconds = 600
+
+[projects]
+default = "code"
+
+[projects.code]
+path = "/home/aditys/code"
+description = "Main Code Directory"
+
+[projects.opencode-bot]
+path = "/home/aditys/code/opencode_extension/opencode-bot"
+description = "OpenCode Telegram Bot repository"
+
+[bot]
+max_active_tasks_per_session = 1
+progress_update_interval_seconds = 5
+max_telegram_message_length = 4000

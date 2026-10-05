@@ -1,0 +1,23 @@
+# Environment and local configuration
+.env
+config.toml
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Local application data
+data/*.sqlite3
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store

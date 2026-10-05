@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenCode Telegram Remote Control Bot
+After=opencode-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/aditys/code/opencode_extension/opencode-bot
+ExecStart=/home/aditys/code/opencode_extension/opencode-bot/.venv/bin/python -m opencode_telegram.main
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/aditys/code/opencode_extension/opencode-bot/.env
+
+[Install]
+WantedBy=default.target

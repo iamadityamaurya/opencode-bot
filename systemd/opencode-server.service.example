@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenCode Headless Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/aditys/code/opencode_extension/opencode-bot
+EnvironmentFile=/home/aditys/code/opencode_extension/opencode-bot/.env
+ExecStart=/home/aditys/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
