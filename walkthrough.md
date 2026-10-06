@@ -94,39 +94,46 @@ max_telegram_message_length = 4000
 
 ### Phase 1: OpenCode API Integration Layer (`opencode/client.py`)
 
-Build an asynchronous HTTP client wrapper using `httpx` to interface with `http://127.0.0.1:4096`.
+Build an asynchronous HTTP client wrapper using `httpx` to interface with the **OpenCode V2 API** at `http://127.0.0.1:4096`. V2 exposes its API under the `/api` prefix and requires authentication. When `OPENCODE_SERVER_PASSWORD` is set, the server uses HTTP basic auth (username defaults to `opencode`, override with `OPENCODE_SERVER_USERNAME`).
 
-Key Endpoints to Wrap:
-- `GET /global/health`: Server health check.
-- `POST /session`: Create new OpenCode session.
-- `GET /session`: List active sessions.
-- `POST /session/{id}/prompt_async`: Submit non-blocking prompt.
-- `POST /session/{id}/abort`: Abort running task.
-- `GET /session/{id}/diff`: Inspect file modifications.
-- `GET /event`: Open SSE stream for real-time progress updates.
+Key Endpoints to Wrap (V2):
+- `GET /api/info`: Server info / health check.
+- `POST /api/session`: Create a session (send `location: {directory}` to bind a project).
+- `GET /api/session`: List sessions (`directory` query filters by project).
+- `POST /api/session/{id}/prompt`: Enqueue a prompt (returns the accepted inbox item immediately).
+- `POST /api/session/{id}/interrupt`: Interrupt the running turn.
+- `GET /api/session/{id}/message`: Read conversation messages (`order=desc` for newest-first).
+- `GET /api/session/{id}/diff`: Inspect file modifications.
+- `GET /api/event`: Open the SSE stream for real-time events.
 
 ```python
 # Example Client Structure snippet
 import httpx
 
 class OpenCodeClient:
-    def __init__(self, base_url: str):
-        self.client = httpx.AsyncClient(base_url=base_url, timeout=30.0)
+    def __init__(self, base_url: str, password: str = "", username: str = "opencode"):
+        auth = (username, password) if password else None
+        self.client = httpx.AsyncClient(base_url=base_url, auth=auth, timeout=30.0)
 
     async def check_health(self) -> bool:
-        resp = await self.client.get("/global/health")
-        return resp.status_code == 200
+        resp = await self.client.get("/api/info")
+        return resp.status_code == 200 and "version" in resp.json()
 
-    async def create_session(self, title: str | None = None) -> dict:
-        resp = await self.client.post("/session", json={"title": title})
+    async def create_session(self, title: str | None = None, directory: str | None = None) -> dict:
+        payload: dict = {"title": title}
+        if directory:
+            payload["location"] = {"directory": directory}
+        resp = await self.client.post("/api/session", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        return resp.json()["data"]
 
-    async def send_prompt_async(self, session_id: str, prompt: str) -> dict:
-        resp = await self.client.post(f"/session/{session_id}/prompt_async", json={"prompt": prompt})
+    async def send_prompt(self, session_id: str, prompt: str) -> dict:
+        resp = await self.client.post(f"/api/session/{session_id}/prompt", json={"text": prompt})
         resp.raise_for_status()
-        return resp.json()
+        return resp.json()["data"]
 ```
+
+Note: the V2 prompt endpoint accepts the message and returns immediately. Completion is detected from the event stream (`session.idle` / `session.execution.succeeded|failed|interrupted`) with a polling fallback against `GET /api/session/{id}/message`; the messages API remains the source of truth. See `opencode/router.py` and `services/tasks.py`.
 
 ---
 
@@ -168,7 +175,7 @@ CREATE TABLE IF NOT EXISTS user_states (
 
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
-    project_name TEXT NOT MAIN,
+    project_name TEXT NOT NULL,
     telegram_user_id INTEGER,
     title TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -199,10 +206,14 @@ Implement commands using `python-telegram-bot`:
 | `/new` | Spawn a new OpenCode session in active project |
 | `/sessions` | List sessions in current project |
 | `/session <id>` | Select active session |
+| `/models` | View available LLMs & switch model for active session |
+| `/agent <build\|plan>` | Switch agent mode (Build or Plan) |
+| `/rename <title>` | Rename session title |
 | `/ask <prompt>` | Submit coding task to active session |
 | `/status` | View running task state, session status, and server health |
 | `/stop` | Abort active task in current session |
 | `/diff` | Show file modification summary |
+| `/history` | Show session message history |
 
 ---
 
@@ -215,14 +226,15 @@ To prevent overlapping edits or race conditions:
 
 ---
 
-### Phase 6: Event Listener & Permission Workflow (`opencode/events.py`)
+### Phase 6: Event Listener & Permission Workflow (`opencode/events.py`, `opencode/router.py`)
 
-Connect to `GET /event` via HTTP SSE streaming to receive live updates.
+Connect to `GET /api/event` via HTTP SSE streaming to receive live updates. Frames are `data: {json}` lines where the JSON is `{"id", "type", "data"}`; ignore `:` heartbeat comments and reconnect with backoff. `opencode/router.py` is the single fan-out point: it dispatches every event to subscribers and lets `services/tasks.py` block on a specific session/type (`wait_for`).
 
-1. **Progress Throttling**: Batch token/tool updates and send progress reports at configurable intervals (e.g., every 10s) to respect Telegram rate limits.
-2. **Interactive Permissions**: When an event indicates OpenCode requires user approval for a tool/file operation:
-   - Send an inline message with **Approve** and **Deny** buttons.
-   - Upon button click, validate user identity and post the resolution back to OpenCode's permission response endpoint.
+1. **Event-Driven Completion**: `services/tasks.py` wakes on `session.idle` / `session.execution.succeeded|failed|interrupted` instead of only polling, then re-reads messages (the authoritative source) with `evaluate_completion`. A polling interval remains as a safety net.
+2. **Live Progress**: tool/step events (`session.tool.input.started`, `session.step.started`) update the task's acknowledgement message, throttled by `progress_edit_interval_seconds`.
+3. **Reactions**: `session.execution.*` drives 👀 / ✅ / ❌ / 🛑 reactions on the task message (`bot/notifier.py`).
+4. **Interactive Permissions**: on `permission.asked`, send an inline **Approve** / **Deny** message whose `callback_data` is a short token (Telegram caps callbacks at 64 bytes); on click, post the resolution to the V2 `/permission/{id}/reply` endpoint and edit the message to reflect the outcome (including replies made elsewhere).
+5. **Heartbeat**: `services/heartbeat.py` aggregates active sessions / approvals / cost and keeps one pinned status message per chat up to date.
 
 ---
 

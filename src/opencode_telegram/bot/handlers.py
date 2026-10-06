@@ -3,6 +3,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from opencode_telegram.config import Config
 from opencode_telegram.bot.authorization import enforce_user_authorization
+from opencode_telegram.bot.callbacks import CallbackRegistry
+from opencode_telegram.bot.notifier import TelegramNotifier
 from opencode_telegram.bot.formatting import format_status_response, format_diff_summary, split_message
 from opencode_telegram.bot.keyboards import (
     get_projects_keyboard,
@@ -12,6 +14,8 @@ from opencode_telegram.bot.keyboards import (
     get_agent_keyboard,
     get_main_reply_keyboard,
     get_new_session_folder_keyboard,
+    get_models_keyboard,
+    get_permission_keyboard,
 )
 from opencode_telegram.opencode.client import OpenCodeClient
 from opencode_telegram.services.projects import ProjectService
@@ -30,6 +34,8 @@ class BotHandlers:
         project_service: ProjectService,
         session_service: SessionService,
         task_service: TaskService,
+        callbacks: CallbackRegistry,
+        notifier: TelegramNotifier,
     ):
         self.config = config
         self.client = client
@@ -37,9 +43,19 @@ class BotHandlers:
         self.project_service = project_service
         self.session_service = session_service
         self.task_service = task_service
+        self.callbacks = callbacks
+        self.notifier = notifier
 
     async def _check_auth(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        return await enforce_user_authorization(update, context, self.config.allowed_user_ids)
+        authorized = await enforce_user_authorization(update, context, self.config.allowed_user_ids)
+        if authorized and update.effective_user and update.effective_chat:
+            # Remember where to deliver proactive messages (completion, permission,
+            # heartbeat) for this user.
+            try:
+                await self.repo.set_user_chat(update.effective_user.id, update.effective_chat.id)
+            except Exception as err:
+                logger.debug(f"Failed to record chat id: {err}")
+        return authorized
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._check_auth(update, context):
@@ -53,13 +69,14 @@ class BotHandlers:
             "• `/chats` or `/active` - Show all active chats & ongoing work\n"
             "• `/new` - Create a new session in current project\n"
             "• `/sessions` - List existing sessions\n"
+            "• `/models` - View & switch AI models\n"
+            "• `/rename <title>` - Rename current session title\n"
             "• `/ask <prompt>` - Send task to OpenCode\n"
             "• `/status` - Check server health & running task\n"
             "• `/stop` - Abort active task\n"
             "• `/diff` - View file changes\n"
             "• `/history` - View conversation history\n"
             "• `/health` - OpenCode server check\n"
-
         )
         reply_kb = get_main_reply_keyboard()
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=reply_kb)
@@ -195,10 +212,14 @@ class BotHandlers:
             return await self.new_session_command(update, context)
         elif prompt in ("⚙️ Agent Mode", "Agent Mode"):
             return await self.agent_command(update, context)
+        elif prompt in ("🤖 AI Models", "AI Models"):
+            return await self.models_command(update, context)
         elif prompt in ("📊 Status", "Status"):
             return await self.status_command(update, context)
         elif prompt in ("📝 View Diff", "View Diff"):
             return await self.diff_command(update, context)
+        elif prompt in ("📖 History", "History"):
+            return await self.history_command(update, context)
 
         user_id = update.effective_user.id
         state = await self.repo.get_user_state(user_id)
@@ -207,8 +228,13 @@ class BotHandlers:
         if not session_id:
             # Auto-create session if none active
             proj_name = state.selected_project if state and state.selected_project else (self.config.default_project or "default")
+            proj = self.project_service.get_project(proj_name)
             try:
-                session = await self.session_service.create_session_for_user(user_id, proj_name)
+                session = await self.session_service.create_session_for_user(
+                    user_id,
+                    proj_name,
+                    directory=str(proj.path) if proj else None,
+                )
                 session_id = session.id
             except Exception as err:
                 await update.message.reply_text(f"❌ Failed to initialize session: {err}")
@@ -219,8 +245,11 @@ class BotHandlers:
             f"⚡ *Task Submitted*\nSession: `{session_id[:12]}...`\n\n_Processing prompt with OpenCode..._",
             parse_mode="Markdown"
         )
+        chat_id = update.effective_chat.id
+        self.notifier.register_task_message(session_id, chat_id, ack_msg.message_id)
 
         async def on_complete(task_rec):
+            self.notifier.clear_task_message(session_id)
             keyboard = get_task_actions_keyboard(session_id)
             if task_rec.state == "completed":
                 chunks = split_message(task_rec.response_text or "Task completed successfully.")
@@ -233,8 +262,16 @@ class BotHandlers:
                 await update.effective_chat.send_message(f"❌ Task Failed:\n`{err_text}`", parse_mode="Markdown", reply_markup=keyboard)
 
         try:
-            await self.task_service.submit_task(user_id, session_id, prompt, on_completion=on_complete)
+            await self.task_service.submit_task(
+                user_id,
+                session_id,
+                prompt,
+                on_completion=on_complete,
+                chat_id=chat_id,
+                ack_message_id=ack_msg.message_id,
+            )
         except Exception as e:
+            self.notifier.clear_task_message(session_id)
             await ack_msg.edit_text(f"❌ Error submitting task: {e}")
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -396,6 +433,83 @@ class BotHandlers:
                 parse_mode="Markdown"
             )
 
+    async def models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self._check_auth(update, context):
+            return
+
+        user_id = update.effective_user.id
+        state = await self.repo.get_user_state(user_id)
+        sess = state.selected_session_id if state else None
+
+        if not sess:
+            await update.message.reply_text("⚠️ No active session selected. Select one with `/sessions` or create one with `/new`.")
+            return
+
+        models = await self.client.get_models()
+        keyboard = get_models_keyboard(models, sess, self.callbacks)
+        await update.message.reply_text(
+            f"🤖 *OpenCode AI Model Selector*\nSession: `{sess[:12]}...`\n\n"
+            f"Select an AI model provider for this session:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    async def rename_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self._check_auth(update, context):
+            return
+
+        user_id = update.effective_user.id
+        state = await self.repo.get_user_state(user_id)
+        sess = state.selected_session_id if state else None
+
+        if not sess:
+            await update.message.reply_text("⚠️ No active session selected.")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: `/rename <new session title>`", parse_mode="Markdown")
+            return
+
+        new_title = " ".join(context.args).strip()
+        success = await self.client.rename_session(sess, new_title)
+        if success:
+            proj_name = state.selected_project or "default"
+            await self.repo.save_session(sess, proj_name, user_id, new_title)
+            await update.message.reply_text(f"✅ Session `{sess[:12]}...` renamed to: *{new_title}*", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ Failed to rename session `{sess[:12]}...`.")
+
+    async def voice_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self._check_auth(update, context):
+            return
+
+        voice = update.message.voice
+        if not voice:
+            return
+
+        duration = voice.duration
+        msg = f"🎙️ *Voice Prompt Received* ({duration}s)\n_Forwarding prompt to OpenCode..._"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+        caption = update.message.caption or f"Voice task execution request ({duration}s recording)"
+        context.args = caption.split()
+        await self.ask_command(update, context)
+
+    async def document_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self._check_auth(update, context):
+            return
+
+        doc = update.message.document
+        if not doc:
+            return
+
+        file_name = doc.file_name or "uploaded_file"
+        caption = update.message.caption or f"Analyze and process attached file: {file_name}"
+
+        prompt_text = f"📎 [File Context: {file_name}]\n\n{caption}"
+        context.args = prompt_text.split()
+        await self.ask_command(update, context)
+
     async def callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._check_auth(update, context):
             return
@@ -463,4 +577,48 @@ class BotHandlers:
                 await query.edit_message_text(f"✅ Switched session agent mode to *{agent_name.upper()}* {icon}", parse_mode="Markdown")
             else:
                 await query.edit_message_text(f"❌ Failed to switch agent mode to `{agent_name}`.")
+
+        elif data.startswith("select_model_menu:"):
+            sid = data.split(":", 1)[1]
+            models = await self.client.get_models()
+            keyboard = get_models_keyboard(models, sid, self.callbacks)
+            await query.edit_message_text(
+                f"🤖 *Select AI Model for Session*\nSession: `{sid[:12]}...`",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+
+        elif data.startswith("model:"):
+            token = data.split(":", 1)[1]
+            payload = self.callbacks.resolve(token, expected_kind="model")
+            if not payload:
+                await query.edit_message_text("⌛ This model selection expired. Run /models again.")
+                return
+            ok = await self.client.set_session_model(
+                payload["session_id"],
+                payload["model_id"],
+                provider_id=payload["provider_id"],
+            )
+            if ok:
+                await query.edit_message_text(
+                    f"✅ Switched session model to *{payload['model_id']}*", parse_mode="Markdown"
+                )
+            else:
+                await query.edit_message_text(f"❌ Failed to set model to `{payload['model_id']}`.")
+
+        elif data.startswith("perm:"):
+            parts = data.split(":", 2)
+            token = parts[1] if len(parts) > 1 else ""
+            action = parts[2] if len(parts) > 2 else "approve"
+            payload = self.callbacks.resolve(token, expected_kind="permission")
+            if not payload:
+                await query.edit_message_text("⌛ This permission request expired.")
+                return
+            approved = (action == "approve")
+            await self.client.respond_to_permission(
+                payload["session_id"], payload["permission_id"], approved
+            )
+            status_str = "APPROVED ✅" if approved else "DENIED ❌"
+            await query.edit_message_text(f"🛡️ Permission request *{status_str}*", parse_mode="Markdown")
+
 

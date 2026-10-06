@@ -18,3 +18,10 @@ description = "OpenCode Telegram Bot repository"
 max_active_tasks_per_session = 1
 progress_update_interval_seconds = 5
 max_telegram_message_length = 4000
+# How often (seconds) a running task's acknowledgement message may be edited
+# with live tool/step progress. 0 effectively disables live progress edits.
+progress_edit_interval_seconds = 3
+# Pin a self-updating status message per chat. Set to 0 to disable.
+heartbeat_interval_seconds = 60
+# React to task messages with 👀 / ✅ / ❌ / 🛑.
+enable_reactions = true

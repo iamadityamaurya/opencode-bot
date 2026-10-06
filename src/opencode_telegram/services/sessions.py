@@ -17,10 +17,12 @@ class SessionService:
         title: str | None = None,
         directory: str | None = None
     ) -> SessionInfo:
-        session = await self.client.create_session(title=title or f"Telegram session ({project_name})")
-        if directory:
-            await self.client.move_session_directory(session.id, directory)
-            session.directory = directory
+        # V2 is location-scoped: bind the project directory when creating the
+        # session so it never defaults to the server's working directory.
+        session = await self.client.create_session(
+            title=title or f"Telegram session ({project_name})",
+            directory=directory,
+        )
 
         await self.repo.save_session(
             session_id=session.id,
