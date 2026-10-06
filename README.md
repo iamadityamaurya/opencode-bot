@@ -6,7 +6,7 @@ A secure, local-first Telegram bot that allows developers to remotely control an
 
 ## Features
 
-- 🔒 **Defense-in-depth Security**: Loopback binding (`127.0.0.1`), user allowlist, and strict project path validation.
+- 🔒 **Defense-in-depth Security**: Loopback binding (`127.0.0.1`), Telegram user allowlist, and a strict project allowlist.
 - ⚡ **Asynchronous & Non-Blocking**: Built with `asyncio`, keeping Telegram updates responsive during long AI tasks.
 - 🛡️ **Interactive Security Approvals**: Respond to tool execution / file modification permission requests directly with Telegram inline buttons (`Approve` / `Deny`).
 - 🤖 **Dynamic LLM Model Switcher**: Seamlessly switch models (e.g. Claude 3.5 Sonnet, GPT-4o, Gemini 2.0 Flash, DeepSeek R1) per session.
@@ -34,10 +34,10 @@ always re-read from the messages API, so events only act as a fast trigger.
 
 ## Installation & Setup
 
-1. **Clone and Install Dependencies**:
+1. **Install Dependencies** (from the project root):
    ```bash
    python3 -m venv .venv
-   source .venv/bin/pip install -e .
+   .venv/bin/pip install -e .
    ```
 
 2. **Configure Environment Variables**:
@@ -58,9 +58,11 @@ always re-read from the messages API, so events only act as a fast trigger.
    opencode serve --hostname 127.0.0.1 --port 4096
    ```
 
-5. **Run the Telegram Bot**:
+5. **Run the Bot** — any of these from the project root:
    ```bash
-   .venv/bin/python -m opencode_telegram.main
+   ./run.sh            # run in the foreground
+   make run            # same thing
+   make service-start  # run as a systemd user service
    ```
 
 ## Telegram Commands
@@ -81,9 +83,35 @@ always re-read from the messages API, so events only act as a fast trigger.
 - `/history` — View conversation history
 - `/health` — Ping OpenCode server
 
-## Running Tests
+## Day-to-day Commands
 
-Run unit and integration tests with `pytest`:
-```bash
-.venv/bin/pytest
+Everything runs through `make` from the project root (`make help` lists them):
+
+| Command | What it does |
+| --- | --- |
+| `make install` | Install / refresh dependencies into `.venv` |
+| `make run` | Run the bot in the foreground |
+| `make service-start` / `-stop` / `-restart` | Control the systemd user service |
+| `make service-status` | Show service status |
+| `make logs` | Follow the service logs |
+| `make clean` | Remove caches and build artifacts |
+
+## Project Structure
+
 ```
+opencode-bot/
+├── run.sh, Makefile         # easy entry points (run / service / logs / clean)
+├── config.toml              # local config (gitignored); see config.example.toml
+├── .env                     # local secrets (gitignored); see .env.example
+├── data/                    # SQLite state (gitignored)
+├── docs/                    # idea.md (original proposal), walkthrough.md
+├── systemd/                 # systemd --user unit examples
+└── src/opencode_telegram/
+    ├── main.py              # entry point and wiring
+    ├── config.py            # env + config.toml loading
+    ├── opencode/            # OpenCode V2 API layer: client, events, router, models, errors
+    ├── bot/                 # Telegram layer: handlers, keyboards, notifier, callbacks, formatting, authorization
+    ├── services/            # domain logic: projects, sessions, tasks, heartbeat
+    └── storage/             # SQLite: database, repositories
+```
+

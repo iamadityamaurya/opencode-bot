@@ -26,11 +26,6 @@ class SessionInfo:
         )
 
 @dataclass
-class MessageContentPart:
-    type: str
-    text: str = ""
-
-@dataclass
 class SessionMessage:
     id: str
     session_id: str | None
@@ -76,12 +71,6 @@ class SessionMessage:
             outcome=outcome,
             created_at=created_at,
         )
-
-@dataclass
-class DiffSummary:
-    file: str
-    additions: int = 0
-    deletions: int = 0
 
 @dataclass
 class ServerEvent:

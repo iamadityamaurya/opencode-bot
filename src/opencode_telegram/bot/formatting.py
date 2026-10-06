@@ -32,8 +32,7 @@ def format_status_response(
     health: bool,
     project_name: str | None,
     session_id: str | None,
-    task_state: str | None,
-    last_update: str | None = None
+    task_state: str | None
 ) -> str:
     health_str = "🟢 Online" if health else "🔴 Offline"
     proj_str = project_name or "None selected"

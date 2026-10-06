@@ -268,18 +268,6 @@ class OpenCodeClient:
             logger.error(f"Failed to set agent to {agent_name} for session {session_id}: {e}")
             return False
 
-    async def move_session_directory(self, session_id: str, directory_path: str) -> bool:
-        """Change the working directory (location) of a session."""
-        try:
-            resp = await self.client.post(
-                f"/api/session/{session_id}/move",
-                json={"directory": str(directory_path)},
-            )
-            return resp.status_code in (200, 204)
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to move session {session_id} to {directory_path}: {e}")
-            return False
-
     async def get_models(self, directory: str | None = None) -> list[dict[str, Any]]:
         """Fetch available LLM models from the OpenCode server."""
         params: dict[str, Any] = {}
@@ -320,17 +308,6 @@ class OpenCodeClient:
         except httpx.HTTPError as e:
             logger.error(f"Failed to set model {provider_id}/{model_id} for session {session_id}: {e}")
             return False
-
-    async def list_permissions(self, session_id: str) -> list[dict[str, Any]]:
-        """List pending permission requests for a session."""
-        try:
-            resp = await self.client.get(f"/api/session/{session_id}/permission")
-            if resp.status_code != 200:
-                return []
-            return self._as_list(resp.json())
-        except httpx.HTTPError as e:
-            logger.warning(f"Failed to list permissions for session {session_id}: {e}")
-            return []
 
     async def respond_to_permission(
         self,

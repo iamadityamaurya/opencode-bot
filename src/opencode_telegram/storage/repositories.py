@@ -108,14 +108,6 @@ class Repository:
         """, (session_id, project_name, user_id, title)):
             await self.db.conn.commit()
 
-    async def get_session_for_user(self, session_id: str, user_id: int) -> dict[str, Any] | None:
-        async with self.db.conn.execute(
-            "SELECT session_id, project_name, telegram_user_id, title, created_at FROM sessions WHERE session_id = ? AND telegram_user_id = ?",
-            (session_id, user_id)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
-
     async def list_user_sessions(self, user_id: int, project_name: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT session_id, project_name, title, created_at FROM sessions WHERE telegram_user_id = ?"
         params: list[Any] = [user_id]

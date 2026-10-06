@@ -33,9 +33,5 @@ class SessionService:
         await self.repo.set_user_session(user_id, session.id)
         return session
 
-    async def get_active_session_for_user(self, user_id: int) -> str | None:
-        state = await self.repo.get_user_state(user_id)
-        return state.selected_session_id if state else None
-
     async def list_user_sessions(self, user_id: int, project_name: str | None = None) -> list[dict]:
         return await self.repo.list_user_sessions(user_id, project_name=project_name)
